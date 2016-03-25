@@ -212,6 +212,8 @@ func getQueueURL(sqsClient *sqs.SQS, awsSqsQueueName string) (*string, error) {
 
 func main() {
 
+	log.Println("starting ...")
+
 	// get env varaibles
 	environ := &env{}
 	err := envcfg.Unmarshal(&environ)
@@ -234,7 +236,18 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	// start consume
+	log.Println("write to config on start")
+	templateData, err := getEC2Config(ec2Client, environ.AwsEC2GroupName)
+	if err != nil {
+		log.Println("error when trying to fetch ec2 config on start")
+		log.Fatalln(err)
+	}
+	err = writeHaproxyConfig(environ.HaproxyFileDest, templateData)
+	if err != nil {
+		log.Println("error when trying to write to config file on the start")
+		log.Fatalln(err)
+	}
+
 	log.Println("consume from queue:", *queueURL)
 	for {
 		resp, err := sqsClient.ReceiveMessage(&sqs.ReceiveMessageInput{
