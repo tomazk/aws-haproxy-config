@@ -93,24 +93,13 @@ func validateMsg(msg *sqs.Message) bool {
 	return true
 }
 
-func handleMessage(ec2Client *ec2.EC2, msg *sqs.Message, environ *env) {
-
-	if !validateMsg(msg) {
-		log.Printf("msg invalid: %#v", msg)
-		return
-	}
-
-	haproxyConfigFile, err := os.Create(environ.HaproxyFileDest)
-	if err != nil {
-		log.Println("error when creating config file: ", err)
-		return
-	}
+func getEC2Config(ec2Client *ec2.EC2, awsEC2GroupName string) ([]templateItem, error) {
 
 	var templateList []templateItem
-	internalInstances, err := getInstanceListFromGroup(ec2Client, environ.AwsEC2GroupName)
+	internalInstances, err := getInstanceListFromGroup(ec2Client, awsEC2GroupName)
 	if err != nil {
 		log.Println("error when getting EC2 data: ", err)
-		return
+		return nil, err
 	}
 
 	for _, instance := range internalInstances {
@@ -120,16 +109,46 @@ func handleMessage(ec2Client *ec2.EC2, msg *sqs.Message, environ *env) {
 		})
 	}
 
-	err = haProxyTemplate.Execute(haproxyConfigFile, templateList)
+	return templateList, nil
+
+}
+
+func writeHaproxyConfig(haproxyFileDest string, templateData []templateItem) error {
+
+	haproxyConfigFile, err := os.Create(haproxyFileDest)
+	if err != nil {
+		log.Println("error when creating config file: ", err)
+		return err
+	}
+
+	err = haProxyTemplate.Execute(haproxyConfigFile, templateData)
 	if err != nil {
 		log.Println("error when writing to file: ", err)
+		return err
+	}
+	log.Println("config template populated with: ", templateData)
+
+	return nil
+}
+
+func handleMessage(ec2Client *ec2.EC2, msg *sqs.Message, environ *env) {
+
+	if !validateMsg(msg) {
+		log.Printf("msg invalid: %#v", msg)
 		return
 	}
-	log.Println("msg: ", msg)
-	log.Println("msg consumed - config template populated with: ", templateList)
+
+	templateData, err := getEC2Config(ec2Client, environ.AwsEC2GroupName)
+	if err != nil {
+		return
+	}
+
+	err = writeHaproxyConfig(environ.HaproxyFileDest, templateData)
+	if err != nil {
+		return
+	}
 
 	reloadHaproxy(environ.HaproxyReloadScript)
-
 }
 
 func getInstanceListFromGroup(ec2Client *ec2.EC2, groupName string) ([]*internalInstance, error) {
@@ -180,6 +199,17 @@ func getInstanceListFromGroup(ec2Client *ec2.EC2, groupName string) ([]*internal
 	return instances, nil
 }
 
+func getQueueURL(sqsClient *sqs.SQS, awsSqsQueueName string) (*string, error) {
+	queueURLObj, err := sqsClient.GetQueueUrl(&sqs.GetQueueUrlInput{
+		QueueName: aws.String(awsSqsQueueName),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return queueURLObj.QueueUrl, nil
+}
+
 func main() {
 
 	// get env varaibles
@@ -196,19 +226,13 @@ func main() {
 		Region:      aws.String(environ.AwsSqsRegion),
 	})
 	sqsClient := sqs.New(session)
-
 	ec2Client := ec2.New(session)
 
-	// get queue url
-	queueURLObj, err := sqsClient.GetQueueUrl(&sqs.GetQueueUrlInput{
-		QueueName: aws.String(environ.AwsSqsQueueName),
-	})
+	queueURL, err := getQueueURL(sqsClient, environ.AwsSqsQueueName)
 	if err != nil {
 		log.Println("no queue found: ", environ.AwsSqsQueueName)
 		log.Fatalln(err)
-		return
 	}
-	queueURL := queueURLObj.QueueUrl
 
 	// start consume
 	log.Println("consume from queue:", *queueURL)
