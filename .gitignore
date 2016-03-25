@@ -22,3 +22,10 @@ _testmain.go
 *.exe
 *.test
 *.prof
+
+
+# repo specific
+
+main
+env_main.sh
+haproxy.cfg
